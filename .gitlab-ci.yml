@@ -1,0 +1,60 @@
+image: alpine:latest
+
+stages:
+    - deploy
+    - get_container_log
+
+before_script:
+  - 'command -v ssh-agent >/dev/null || ( apk add --update openssh )' 
+  - eval $(ssh-agent -s)
+  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 600 ~/.ssh
+  - ssh-keyscan $SERVER_ADDRESS >> ~/.ssh/known_hosts
+  - chmod 644 ~/.ssh/known_hosts
+
+DeployApp:
+    stage: deploy
+    only:
+        - main
+        - develop
+    script:
+        - if [[ $CI_COMMIT_BRANCH == main ]];
+            then 
+                PROJECT_NAME=$BASE_DIR$CI_PROJECT_NAME;
+                CONTAINER_NAME="ghclient-web-1";
+                ENV_FILE=$env;
+                PORT=25000;
+            else
+                PROJECT_NAME=$BASE_DIR${CI_PROJECT_NAME}_${CI_COMMIT_BRANCH};
+                CONTAINER_NAME="ghclient_develop-web-1";
+                ENV_FILE=$env_dev;
+                PORT=25001;
+            fi
+        - ssh $SERVER_USERNAME@$SERVER_ADDRESS "
+            if [[ ! -e $PROJECT_NAME ]]; 
+                then echo "Repository is not found. Please clone the repository manually to the server first" && exit 1; 
+            fi &&
+            cd $PROJECT_NAME &&
+            git checkout $CI_COMMIT_BRANCH &&
+            git pull"
+        - scp $ENV_FILE $SERVER_USERNAME@$SERVER_ADDRESS:/$PROJECT_NAME/.env
+        - ssh $SERVER_USERNAME@$SERVER_ADDRESS "
+            cd $PROJECT_NAME &&
+            docker-compose -f docker-compose_${CI_COMMIT_BRANCH}.yaml up --build -d && 
+            sleep 5"
+        - ssh $SERVER_USERNAME@$SERVER_ADDRESS "docker logs ${CONTAINER_NAME}"
+        - ssh $SERVER_USERNAME@$SERVER_ADDRESS "curl $SERVER_ADDRESS:$PORT"
+        - echo "Application successfully deployed."
+
+GetLog:
+    stage: get_container_log
+    script:
+        - if [[ $CI_COMMIT_BRANCH == main ]];
+            then 
+                CONTAINER_NAME="ghclient-web-1";
+            else
+                CONTAINER_NAME="ghclient_develop-web-1";
+            fi
+        - ssh $SERVER_USERNAME@$SERVER_ADDRESS "docker logs ${CONTAINER_NAME}"
+    when: manual       
